@@ -1,20 +1,35 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Action, StatusPayload, availableActions, formatDuration } from "./printer";
+import { Action, AppConfig, Discovery, StatusPayload, Webcam, availableActions, formatDuration } from "./printer";
 import "./App.css";
 
-function UrlForm({ initial, onSaved, onCancel }: { initial: string; onSaved: (url: string) => void; onCancel?: () => void }) {
+function UrlForm({ initial, savedCameras, onSaved, onCancel }: { initial: string; savedCameras: string[]; onSaved: (cfg: AppConfig) => void; onCancel?: () => void }) {
   const [url, setUrl] = useState(initial);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [found, setFound] = useState<Discovery | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
 
-  async function submit(e: React.FormEvent) {
+  async function save(baseUrl: string, cameras: string[]) {
+    await invoke<string>("save_config", { url: baseUrl, cameras });
+    onSaved({ baseUrl, cameras });
+  }
+
+  async function connect(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      onSaved(await invoke<string>("save_config", { url }));
+      const d = await invoke<Discovery>("discover", { url });
+      if (d.webcams.length === 0) {
+        await save(d.baseUrl, []);
+        return;
+      }
+      const known = d.webcams.filter((w) => savedCameras.includes(w.uid));
+      const initialSel = known.length > 0 ? known : d.webcams.filter((w) => w.enabled);
+      setSelected(initialSel.map((w) => w.uid));
+      setFound(d);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -22,17 +37,97 @@ function UrlForm({ initial, onSaved, onCancel }: { initial: string; onSaved: (ur
     }
   }
 
+  async function saveSelection() {
+    if (!found) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await save(found.baseUrl, selected);
+    } catch (err) {
+      setError(String(err));
+      setBusy(false);
+    }
+  }
+
+  if (found) {
+    return (
+      <div className="card">
+        <label>Cameras to monitor</label>
+        {found.webcams.map((w) => (
+          <label key={w.uid} className="check">
+            <input
+              type="checkbox"
+              checked={selected.includes(w.uid)}
+              onChange={(e) => setSelected(e.target.checked ? [...selected, w.uid] : selected.filter((u) => u !== w.uid))}
+            />
+            <span>{w.name}</span>
+            <span className="muted">{w.service}{w.enabled ? "" : " · disabled"}</span>
+          </label>
+        ))}
+        {error && <p className="error" role="alert">{error}</p>}
+        <div className="row">
+          <button onClick={saveSelection} disabled={busy}>{busy ? "Saving…" : "Save"}</button>
+          <button type="button" onClick={() => setFound(null)} disabled={busy}>Back</button>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <form onSubmit={submit} className="card">
+    <form onSubmit={connect} className="card">
       <label htmlFor="url">Moonraker base URL</label>
       <input id="url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://printer.local:7125" autoFocus />
       {error && <p className="error" role="alert">{error}</p>}
       <div className="row">
-        <button type="submit" disabled={busy || !url.trim()}>{busy ? "Checking…" : "Validate & Save"}</button>
+        <button type="submit" disabled={busy || !url.trim()}>{busy ? "Checking…" : "Connect"}</button>
         {onCancel && <button type="button" onClick={onCancel}>Cancel</button>}
       </div>
     </form>
   );
+}
+
+function Camera({ cam }: { cam: Webcam }) {
+  const [failed, setFailed] = useState(false);
+  const [w, h] = cam.aspectRatio.split(":").map(Number);
+  const ratio = w > 0 && h > 0 ? `${w} / ${h}` : "4 / 3";
+  const flip = `scale(${cam.flipHorizontal ? -1 : 1}, ${cam.flipVertical ? -1 : 1})`;
+  const supported = cam.service.startsWith("mjpegstreamer");
+  return (
+    <div className="card">
+      <span className="muted">{cam.name}</span>
+      {!supported ? (
+        <p className="error">Unsupported service: {cam.service}</p>
+      ) : failed ? (
+        <p className="error">Stream unavailable</p>
+      ) : (
+        <img className="cam" src={cam.streamUrl} alt={cam.name} style={{ aspectRatio: ratio, transform: flip }} onError={() => setFailed(true)} />
+      )}
+    </div>
+  );
+}
+
+/** Streams stay open while mounted, so render nothing while the window is hidden to tray. */
+function Cameras({ baseUrl, selected }: { baseUrl: string; selected: string[] }) {
+  const [cams, setCams] = useState<Webcam[]>([]);
+  const [visible, setVisible] = useState(true);
+
+  useEffect(() => {
+    if (selected.length === 0) {
+      setCams([]);
+      return;
+    }
+    invoke<Webcam[]>("get_webcams").then(setCams, () => setCams([]));
+  }, [baseUrl, selected]);
+
+  useEffect(() => {
+    const unlisten = listen<boolean>("window-visible", (e) => setVisible(e.payload));
+    return () => {
+      unlisten.then((f) => f());
+    };
+  }, []);
+
+  if (!visible) return null;
+  return <>{cams.map((c) => <Camera key={c.uid} cam={c} />)}</>;
 }
 
 const CONFIRM: Partial<Record<Action, string>> = {
@@ -124,13 +219,13 @@ function Dashboard({ payload }: { payload: StatusPayload | null }) {
 }
 
 export default function App() {
-  const [url, setUrl] = useState<string | null | undefined>(undefined);
+  const [config, setConfig] = useState<AppConfig | undefined>(undefined);
   const [editing, setEditing] = useState(false);
   const [payload, setPayload] = useState<StatusPayload | null>(null);
   const [testMsg, setTestMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    invoke<string | null>("get_config").then(setUrl);
+    invoke<AppConfig>("get_config").then(setConfig);
     invoke<StatusPayload | null>("get_status").then(setPayload);
     const unlisten = listen<StatusPayload>("printer-status", (e) => setPayload(e.payload));
     return () => {
@@ -138,7 +233,8 @@ export default function App() {
     };
   }, []);
 
-  if (url === undefined) return null;
+  if (config === undefined) return null;
+  const url = config.baseUrl;
 
   if (!url || editing) {
     return (
@@ -146,8 +242,9 @@ export default function App() {
         <h1>Moonraker Monitor</h1>
         <UrlForm
           initial={url ?? ""}
-          onSaved={(u) => {
-            setUrl(u);
+          savedCameras={config.cameras}
+          onSaved={(c) => {
+            setConfig(c);
             setPayload(null);
             setEditing(false);
           }}
@@ -177,6 +274,7 @@ export default function App() {
       </div>
       <p className="muted">{url}{testMsg && ` · ${testMsg}`}</p>
       <Dashboard payload={payload} />
+      <Cameras baseUrl={url} selected={config.cameras} />
     </main>
   );
 }

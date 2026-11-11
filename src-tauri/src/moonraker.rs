@@ -129,6 +129,61 @@ pub async fn query_status(client: &Client, base: &str) -> Result<PrinterStatus, 
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Webcam {
+    #[serde(default)]
+    pub uid: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub service: String,
+    #[serde(default, alias = "stream_url")]
+    pub stream_url: String,
+    #[serde(default, alias = "flip_horizontal")]
+    pub flip_horizontal: bool,
+    #[serde(default, alias = "flip_vertical")]
+    pub flip_vertical: bool,
+    #[serde(default, alias = "aspect_ratio")]
+    pub aspect_ratio: String,
+}
+
+/// Absolute URLs pass through. A leading-`/` URL is served by the web proxy
+/// (nginx) on the host's default port, not Moonraker's, so drop the port.
+pub fn resolve_url(base: &str, url: &str) -> String {
+    if url.starts_with('/') {
+        if let Ok(mut b) = Url::parse(base) {
+            let _ = b.set_port(None);
+            b.set_path("");
+            return format!("{}{url}", b.as_str().trim_end_matches('/'));
+        }
+    }
+    url.to_string()
+}
+
+/// GET /server/webcams/list with stream URLs resolved against `base`.
+pub async fn list_webcams(client: &Client, base: &str) -> Result<Vec<Webcam>, String> {
+    let body = get_json(client, &format!("{base}/server/webcams/list")).await?;
+    parse_webcams(base, &body)
+}
+
+fn parse_webcams(base: &str, body: &Value) -> Result<Vec<Webcam>, String> {
+    let list = body["result"]["webcams"]
+        .as_array()
+        .ok_or("No webcam list in response")?;
+    Ok(list
+        .iter()
+        .filter_map(|v| serde_json::from_value::<Webcam>(v.clone()).ok())
+        .filter(|w| !w.uid.is_empty())
+        .map(|mut w| {
+            w.stream_url = resolve_url(base, &w.stream_url);
+            w
+        })
+        .collect())
+}
+
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
@@ -215,5 +270,30 @@ mod tests {
         let s = parse_status(&v);
         assert_eq!(s.progress, 0.005);
         assert!(s.eta_seconds.is_none());
+    }
+
+    const WEBCAMS: &str = r#"{"result":{"webcams":[
+      {"name":"Example","enabled":false,"aspect_ratio":"4:3","service":"mjpegstreamer","stream_url":"http://your_IP:8080/?action=stream","flip_horizontal":false,"flip_vertical":false,"uid":"fea116be"},
+      {"name":"cam","enabled":true,"aspect_ratio":"4:3","service":"mjpegstreamer","stream_url":"/webcam/?action=stream","flip_horizontal":true,"flip_vertical":false,"uid":"8e5002de"}]}}"#;
+
+    #[test]
+    fn resolve_url_cases() {
+        let base = "http://printer.local:7125";
+        assert_eq!(resolve_url(base, "/webcam/?action=stream"), "http://printer.local/webcam/?action=stream");
+        assert_eq!(resolve_url(base, "http://x:8080/?a=1"), "http://x:8080/?a=1");
+        assert_eq!(resolve_url("https://p.local:7125", "/w"), "https://p.local/w");
+    }
+
+    #[test]
+    fn parses_webcam_fixture() {
+        let v: Value = serde_json::from_str(WEBCAMS).unwrap();
+        let w = parse_webcams("http://printer.local:7125", &v).unwrap();
+        assert_eq!(w.len(), 2);
+        assert!(!w[0].enabled);
+        assert_eq!(w[0].stream_url, "http://your_IP:8080/?action=stream");
+        assert_eq!(w[1].uid, "8e5002de");
+        assert_eq!(w[1].stream_url, "http://printer.local/webcam/?action=stream");
+        assert!(w[1].flip_horizontal);
+        assert_eq!(w[1].aspect_ratio, "4:3");
     }
 }

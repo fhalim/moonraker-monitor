@@ -6,6 +6,9 @@ use tauri::{AppHandle, Manager};
 #[serde(rename_all = "camelCase")]
 pub struct Config {
     pub base_url: Option<String>,
+    /// uids of webcams selected for display
+    #[serde(default)]
+    pub cameras: Vec<String>,
 }
 
 fn path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -30,4 +33,16 @@ pub fn save(app: &AppHandle, config: &Config) -> Result<(), String> {
     }
     let json = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
     std::fs::write(p, json).map_err(|e| format!("Cannot save config: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_config_without_cameras_still_parses() {
+        let c: Config = serde_json::from_str(r#"{"baseUrl":"http://p:7125"}"#).unwrap();
+        assert_eq!(c.base_url.as_deref(), Some("http://p:7125"));
+        assert!(c.cameras.is_empty());
+    }
 }

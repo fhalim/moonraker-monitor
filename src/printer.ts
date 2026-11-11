@@ -48,3 +48,24 @@ export function formatDuration(seconds: number | null): string {
   const minutes = Math.floor(seconds / 60);
   return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
 }
+
+export interface Webcam {
+  uid: string;
+  name: string;
+  enabled: boolean;
+  service: string;
+  streamUrl: string;
+  flipHorizontal: boolean;
+  flipVertical: boolean;
+  aspectRatio: string;
+}
+
+export interface AppConfig {
+  baseUrl: string | null;
+  cameras: string[];
+}
+
+export interface Discovery {
+  baseUrl: string;
+  webcams: Webcam[];
+}
