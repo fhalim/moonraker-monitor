@@ -9,3 +9,4 @@ Tauri 2 + React/TS. Rust backend polls Moonraker and sends notifications; UI onl
 - Keep `@tauri-apps/api`/`cli` versions on the same minor as the `tauri` crate.
 - Never send control commands (pause/cancel/e-stop/gcode) to a real printer while testing.
 - Closing the window must hide to tray, not exit.
+- Release: bump `version` in `tauri.conf.json`, `src-tauri/Cargo.toml`, `package.json`; then `git tag vX.Y.Z && git push origin main vX.Y.Z`. `.github/workflows/release.yml` builds Windows + Linux and publishes the release.
