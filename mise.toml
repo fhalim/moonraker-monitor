@@ -1,0 +1,8 @@
+# Toolchain for tauri-hello.
+# Windows prereqs mise cannot manage (MSVC Build Tools, WebView2 runtime)
+# are checked/installed by `just setup` via scripts/prereqs.ps1.
+[tools]
+node = "26"
+pnpm = "11"
+rust = "1.97"
+just = "1"
